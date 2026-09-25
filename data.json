@@ -1,0 +1,18 @@
+{
+  "goal": {
+    "name": "iPhone 14",
+    "spec": "256GB · Blauw · Dual eSIM",
+    "price": 34900,
+    "target": 17450
+  },
+  "chores": [
+    { "id": "was", "name": "Was draaien en ophangen", "cents": 500 },
+    { "id": "auto", "name": "Auto wassen", "cents": 1000 },
+    { "id": "badkamer", "name": "Badkamer grondig schoonmaken", "cents": 750 },
+    { "id": "keuken", "name": "Keuken schoonmaken (aanrecht, kookplaat)", "cents": 500 },
+    { "id": "stofzuigen", "name": "Stofzuigen en dweilen benedenverdieping", "cents": 1000 },
+    { "id": "ramen", "name": "Schoonmaken van ramen (binnenkant)", "cents": 500 },
+    { "id": "onkruid", "name": "Onkruid wieden in de tuin", "cents": 500 }
+  ],
+  "entries": []
+}

@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spaarpot invoeren</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;600;700;800&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wrap" id="app">
+  <p class="empty">Laden…</p>
+</main>
+<script src="common.js"></script>
+<script>
+(function () {
+  var S = Spaarpot, app = document.getElementById('app');
+  var KEY = 'spaarpot-github';
+  var DATA_PATH = 'data.json';
+
+  // Repo-gegevens: afgeleid van het github.io-adres, of handmatig ingevuld bij het koppelen.
+  function guessRepo() {
+    var host = location.hostname, m = host.match(/^([^.]+)\.github\.io$/i);
+    if (!m) return { owner: '', repo: '' };
+    var first = location.pathname.split('/')[1] || '';
+    return { owner: m[1], repo: first && !/\.html?$/.test(first) ? first : host };
+  }
+  function loadCfg() {
+    try { var c = JSON.parse(localStorage.getItem(KEY) || 'null'); if (c && c.token) return c; } catch (e) {}
+    return null;
+  }
+  function saveCfg(c) { try { localStorage.setItem(KEY, JSON.stringify(c)); return true; } catch (e) { return false; } }
+  function clearCfg() { try { localStorage.removeItem(KEY); } catch (e) {} }
+
+  var cfg = loadCfg(), state = null, sha = null, busy = false, flash = null;
+  var editingId = null, listOpen = false;
+
+  function today() {
+    var d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function parseEuro(v) {
+    var n = parseFloat(String(v).replace(/\s|€/g, '').replace(',', '.'));
+    return isFinite(n) ? Math.round(n * 100) : NaN;
+  }
+  function centsInput(c) { return (c / 100).toFixed(2).replace('.', ','); }
+  function b64decode(b64) {
+    var bin = atob(b64.replace(/\s/g, ''));
+    return new TextDecoder().decode(Uint8Array.from(bin, function (ch) { return ch.charCodeAt(0); }));
+  }
+  function b64encode(str) {
+    var bytes = new TextEncoder().encode(str), bin = '';
+    bytes.forEach(function (b) { bin += String.fromCharCode(b); });
+    return btoa(bin);
+  }
+
+  /* ---------- GitHub ---------- */
+  function api(method, body) {
+    var url = 'https://api.github.com/repos/' + encodeURIComponent(cfg.owner) + '/' + encodeURIComponent(cfg.repo) +
+      '/contents/' + DATA_PATH + (method === 'GET' ? '?ref=' + encodeURIComponent(cfg.branch) + '&t=' + Date.now() : '');
+    return fetch(url, {
+      method: method,
+      cache: 'no-store',
+      headers: { 'Authorization': 'Bearer ' + cfg.token, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+      body: body ? JSON.stringify(body) : undefined
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) { var e = new Error(j.message || r.status); e.status = r.status; throw e; }
+        return j;
+      });
+    });
+  }
+  function explain(e) {
+    if (e.status === 401) return 'GitHub accepteert de sleutel niet (verlopen of ingetrokken). Ontkoppel en koppel opnieuw met een nieuwe sleutel.';
+    if (e.status === 403) return 'De sleutel mag niet schrijven in deze repo. Geef hem “Contents: Read and write” op deze repo.';
+    if (e.status === 404) return 'Repo of data.json niet gevonden. Klopt de naam van de repo, en heeft de sleutel toegang tot deze repo?';
+    if (e.status === 409 || e.status === 422) return 'Iemand anders heeft net iets opgeslagen. De nieuwste stand is geladen; probeer het nog een keer.';
+    return 'Opslaan of laden is niet gelukt (' + (e.message || 'onbekende fout') + '). Controleer je internet en probeer het opnieuw.';
+  }
+  function load() {
+    return api('GET').then(function (j) { sha = j.sha; state = JSON.parse(b64decode(j.content)); });
+  }
+  function commit(next, message, okMsg, errEl, btn) {
+    busy = true;
+    if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = 'Opslaan…'; }
+    api('PUT', { message: message, content: b64encode(JSON.stringify(next, null, 2) + '\n'), sha: sha, branch: cfg.branch })
+      .then(function (j) {
+        sha = j.content.sha; state = next; busy = false; editingId = null;
+        flash = { kind: 'ok', text: okMsg + ' Over ongeveer een minuut staat het ook op de spaarpot.' };
+        render();
+      }, function (e) {
+        busy = false;
+        if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label; }
+        var text = explain(e);
+        if (e.status === 409 || e.status === 422) { load().then(function () { flash = { kind: 'err', text: text }; render(); }); return; }
+        if (errEl) { errEl.textContent = text; errEl.hidden = false; } else { flash = { kind: 'err', text: text }; render(); }
+      });
+  }
+
+  /* ---------- schermen ---------- */
+  function header(title, sub) {
+    return '<header class="top"><div><p class="eyebrow">Alleen voor ouders</p><h1>' + title + '</h1></div>' +
+      (sub ? '<span class="chip num"><span class="dot"></span>' + sub + '</span>' : '') + '</header>';
+  }
+
+  function connectView(errText) {
+    var g = guessRepo(), c = cfg || {};
+    app.innerHTML = header('Koppelen', '') +
+      '<form class="card" id="c-form" novalidate>' +
+        '<h2>Koppel deze browser aan GitHub</h2>' +
+        '<p class="help">Opslaan gebeurt rechtstreeks in de repo op GitHub. Daarvoor is een sleutel nodig die alleen in déze browser bewaard wordt. Wie de sleutel niet heeft, kan niets wijzigen.</p>' +
+        '<ol class="help" style="margin:0;padding-left:20px">' +
+          '<li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub → nieuwe fine-grained token</a>.</li>' +
+          '<li>Kies bij <em>Repository access</em> alleen de repo van de spaarpot.</li>' +
+          '<li>Zet bij <em>Permissions → Contents</em> “Read and write”.</li>' +
+          '<li>Maak de token aan en plak hem hieronder.</li>' +
+        '</ol>' +
+        '<div class="grid2">' +
+          '<div class="field"><label for="c-owner">GitHub-account</label><input id="c-owner" autocomplete="off" value="' + S.esc(c.owner || g.owner) + '"></div>' +
+          '<div class="field"><label for="c-repo">Repo</label><input id="c-repo" autocomplete="off" value="' + S.esc(c.repo || g.repo) + '"></div>' +
+        '</div>' +
+        '<div class="field"><label for="c-token">Sleutel (token)</label><input id="c-token" type="password" autocomplete="off" placeholder="github_pat_…"></div>' +
+        '<div class="actions"><button class="btn" type="submit" id="c-submit">Koppelen</button></div>' +
+        '<p class="msg err" id="c-err"' + (errText ? '' : ' hidden') + '>' + S.esc(errText || '') + '</p>' +
+      '</form>';
+
+    document.getElementById('c-form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var err = document.getElementById('c-err'), btn = document.getElementById('c-submit');
+      var next = {
+        owner: document.getElementById('c-owner').value.trim(),
+        repo: document.getElementById('c-repo').value.trim(),
+        token: document.getElementById('c-token').value.trim(),
+        branch: 'main'
+      };
+      if (!next.owner || !next.repo || !next.token) { err.textContent = 'Vul account, repo en sleutel in.'; err.hidden = false; return; }
+      btn.disabled = true; btn.textContent = 'Controleren…';
+      cfg = next;
+      load().then(function () {
+        if (!saveCfg(cfg)) flash = { kind: 'info', text: 'Gekoppeld, maar deze browser bewaart de sleutel niet. Na verversen moet je opnieuw koppelen.' };
+        render();
+      }, function (e) {
+        cfg = null;
+        btn.disabled = false; btn.textContent = 'Koppelen';
+        err.textContent = explain(e); err.hidden = false;
+      });
+    });
+  }
+
+  function mainView() {
+    var list = S.sorted(state), h = '';
+    h += header('Klusje invoeren', S.euro(S.total(state)) + ' van ' + S.euro(state.goal.target));
+    if (flash) { h += '<p class="msg ' + flash.kind + '" role="status">' + S.esc(flash.text) + '</p>'; flash = null; }
+
+    h += '<form class="card" id="f-form" novalidate><h2>Nieuw klusje</h2>' +
+      '<div class="grid2">' +
+        '<div class="field"><label for="f-date">Datum</label><input type="date" id="f-date" value="' + today() + '"></div>' +
+        '<div class="field"><label for="f-amount">Bedrag</label><div class="money"><span>€</span><input type="text" inputmode="decimal" id="f-amount" value="' + centsInput(state.chores[0].cents) + '"></div></div>' +
+      '</div>' +
+      '<div class="field"><label for="f-chore">Klusje</label><select id="f-chore">' +
+        state.chores.map(function (c) { return '<option value="' + S.esc(c.id) + '">' + S.esc(c.name) + ' (' + S.euro(c.cents) + ')</option>'; }).join('') +
+        '<option value="__anders">Iets anders…</option></select></div>' +
+      '<div class="field" id="f-other-wrap" hidden><label for="f-other">Omschrijving</label><input type="text" id="f-other" maxlength="80" placeholder="Bijv. boodschappen gedaan"></div>' +
+      '<p class="note" id="f-note">Standaardbedrag voor dit klusje.</p>' +
+      '<div class="actions"><button class="btn" type="submit" id="f-submit">Opslaan</button></div>' +
+      '<p class="msg err" id="f-err" hidden></p></form>';
+
+    h += '<details class="panel" id="list-panel"' + (listOpen ? ' open' : '') + '><summary><span class="badge mint">' + S.icons.check + '</span>' +
+      '<span class="s-text"><h2>Ingevoerd</h2><span class="num">' + list.length + (list.length === 1 ? ' klusje' : ' klusjes') + '</span></span>' +
+      '<span class="chev">' + S.icons.chev + '</span></summary><div class="panel-body">' +
+      (list.length ? '<ol class="rows admin">' + list.map(function (e) {
+        if (e.id === editingId) {
+          return '<li class="editing"><form class="edit-form" data-edit-form="' + S.esc(e.id) + '" novalidate>' +
+            '<div class="field"><label for="e-name">Klusje</label><input id="e-name" maxlength="80" value="' + S.esc(e.name) + '"></div>' +
+            '<div class="grid2">' +
+              '<div class="field"><label for="e-date">Datum</label><input type="date" id="e-date" value="' + S.esc(e.date) + '"></div>' +
+              '<div class="field"><label for="e-amount">Bedrag</label><div class="money"><span>€</span><input type="text" inputmode="decimal" id="e-amount" value="' + centsInput(e.cents) + '"></div></div>' +
+            '</div>' +
+            '<div class="actions"><button class="btn" type="submit" id="e-submit">Wijziging opslaan</button>' +
+            '<button class="btn quiet" type="button" data-cancel>Annuleren</button>' +
+            '<button class="del" type="button" data-del="' + S.esc(e.id) + '">Verwijderen</button></div>' +
+            '<p class="msg err" id="e-err" hidden></p></form></li>';
+        }
+        return '<li><span class="what">' + S.esc(e.name) + '</span><span class="pill mint">' + S.euro(e.cents) + '</span>' +
+          '<button class="del" type="button" data-edit="' + S.esc(e.id) + '">Wijzigen</button>' +
+          '<span class="sub">' + S.esc(S.dayLabel(e.date)) + '</span></li>';
+      }).join('') + '</ol>' : '<p class="empty">Nog niets ingevoerd.</p>') +
+      '</div></details>';
+
+    h += '<details class="panel"><summary><span class="badge blue">' + S.icons.list + '</span>' +
+      '<span class="s-text"><h2>Doelbedrag</h2><span class="num">' + S.euro(state.goal.target) + ' van ' + S.euro(state.goal.price) + '</span></span>' +
+      '<span class="chev">' + S.icons.chev + '</span></summary><div class="panel-body">' +
+      '<form class="card" id="g-form" novalidate style="box-shadow:none">' +
+        '<div class="grid2"><div class="field"><label for="g-price">Prijs iPhone</label><div class="money"><span>€</span><input type="text" inputmode="decimal" id="g-price" value="' + centsInput(state.goal.price) + '"></div></div>' +
+        '<div class="field"><label for="g-target">Deel dat zij verdient</label><div class="money"><span>€</span><input type="text" inputmode="decimal" id="g-target" value="' + centsInput(state.goal.target) + '"></div></div></div>' +
+        '<div class="actions"><button class="btn quiet" type="submit" id="g-submit">Doel bijwerken</button></div>' +
+        '<p class="msg err" id="g-err" hidden></p></form></div></details>';
+
+    h += '<p class="foot">Gekoppeld aan ' + S.esc(cfg.owner + '/' + cfg.repo) + ' · <a href="#" id="unlink" style="color:inherit">ontkoppelen</a> · <a href="./" style="color:inherit">naar de spaarpot</a></p>';
+    app.innerHTML = h;
+    wire();
+  }
+
+  function wire() {
+    var sel = document.getElementById('f-chore'), amt = document.getElementById('f-amount');
+    var note = document.getElementById('f-note'), otherWrap = document.getElementById('f-other-wrap');
+    function chore() { return state.chores.filter(function (c) { return c.id === sel.value; })[0]; }
+    function updateNote() {
+      var c = chore(), v = parseEuro(amt.value);
+      if (!c) { note.textContent = 'Vul zelf een omschrijving en bedrag in.'; note.className = 'note'; return; }
+      if (v === c.cents) { note.textContent = 'Standaardbedrag voor dit klusje.'; note.className = 'note'; }
+      else { note.textContent = 'Aangepast: standaard is dit ' + S.euro(c.cents) + '.'; note.className = 'note changed'; }
+    }
+    sel.addEventListener('change', function () {
+      var c = chore();
+      otherWrap.hidden = !!c;
+      if (c) amt.value = centsInput(c.cents); else { amt.value = ''; document.getElementById('f-other').focus(); }
+      updateNote();
+    });
+    amt.addEventListener('input', updateNote);
+
+    document.getElementById('f-form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (busy) return;
+      var err = document.getElementById('f-err'), date = document.getElementById('f-date').value, c = chore();
+      var name = c ? c.name : document.getElementById('f-other').value.trim(), cents = parseEuro(amt.value);
+      var problem = !date ? 'Kies een datum.' : !name ? 'Schrijf op wat ze gedaan heeft.' :
+        !(cents > 0) ? 'Vul een bedrag in, bijvoorbeeld 5,00.' : cents > 100000 ? 'Dat bedrag is wel erg hoog. Klopt het?' : '';
+      if (problem) { err.textContent = problem; err.hidden = false; return; }
+      err.hidden = true;
+      var next = JSON.parse(JSON.stringify(state));
+      next.entries.push({ id: 'k' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), date: date, name: name, cents: cents, chore: c ? c.id : null, added: Date.now() });
+      commit(next, 'Klusje: ' + name + ' (' + S.euro(cents) + ')', name + ' (' + S.euro(cents) + ') is opgeslagen.', err, document.getElementById('f-submit'));
+    });
+
+    document.getElementById('g-form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (busy) return;
+      var err = document.getElementById('g-err');
+      var price = parseEuro(document.getElementById('g-price').value), target = parseEuro(document.getElementById('g-target').value);
+      if (!(price > 0) || !(target > 0)) { err.textContent = 'Vul twee geldige bedragen in, bijvoorbeeld 349,00 en 174,50.'; err.hidden = false; return; }
+      err.hidden = true;
+      var next = JSON.parse(JSON.stringify(state));
+      next.goal.price = price; next.goal.target = target;
+      commit(next, 'Doelbedrag: ' + S.euro(target), 'Doelbedrag bijgewerkt naar ' + S.euro(target) + '.', err, document.getElementById('g-submit'));
+    });
+
+    document.getElementById('unlink').addEventListener('click', function (ev) {
+      ev.preventDefault(); clearCfg(); cfg = null; state = null; connectView();
+    });
+  }
+
+  app.addEventListener('toggle', function (ev) {
+    if (ev.target.id === 'list-panel') listOpen = ev.target.open;
+  }, true);
+
+  app.addEventListener('submit', function (ev) {
+    var f = ev.target.closest('[data-edit-form]');
+    if (!f) return;
+    ev.preventDefault();
+    if (busy) return;
+    var id = f.getAttribute('data-edit-form'), err = document.getElementById('e-err');
+    var name = document.getElementById('e-name').value.trim();
+    var date = document.getElementById('e-date').value;
+    var cents = parseEuro(document.getElementById('e-amount').value);
+    var problem = !name ? 'Vul in welk klusje het was.' : !date ? 'Kies een datum.' :
+      !(cents > 0) ? 'Vul een bedrag in, bijvoorbeeld 5,00.' : cents > 100000 ? 'Dat bedrag is wel erg hoog. Klopt het?' : '';
+    if (problem) { err.textContent = problem; err.hidden = false; return; }
+    var next = JSON.parse(JSON.stringify(state));
+    var e = next.entries.filter(function (x) { return x.id === id; })[0];
+    if (!e) { editingId = null; render(); return; }
+    if (e.name === name && e.date === date && e.cents === cents) { editingId = null; render(); return; }
+    if (e.name !== name) e.chore = null;
+    e.name = name; e.date = date; e.cents = cents;
+    commit(next, 'Gewijzigd: ' + name + ' (' + S.euro(cents) + ')', 'Gewijzigd: ' + name + ' (' + S.euro(cents) + ').', err, document.getElementById('e-submit'));
+  });
+
+  app.addEventListener('click', function (ev) {
+    var ed = ev.target.closest('[data-edit]');
+    if (ed && !busy) { editingId = ed.getAttribute('data-edit'); listOpen = true; render(); var n = document.getElementById('e-name'); if (n) n.focus(); return; }
+    if (ev.target.closest('[data-cancel]') && !busy) { editingId = null; render(); return; }
+    var d = ev.target.closest('[data-del]');
+    if (!d || busy) return;
+    if (!d.classList.contains('armed')) {
+      d.classList.add('armed'); d.textContent = 'Zeker weten?';
+      setTimeout(function () { if (d.isConnected && !busy) { d.classList.remove('armed'); d.textContent = 'Verwijderen'; } }, 4000);
+      return;
+    }
+    var id = d.getAttribute('data-del');
+    var gone = state.entries.filter(function (e) { return e.id === id; })[0];
+    var next = JSON.parse(JSON.stringify(state));
+    next.entries = next.entries.filter(function (e) { return e.id !== id; });
+    commit(next, 'Verwijderd: ' + (gone ? gone.name : id), 'Verwijderd: ' + (gone ? gone.name : 'klusje') + '.', null, d);
+  });
+
+  function render() { if (cfg && state) mainView(); else connectView(); }
+
+  if (cfg) {
+    load().then(render, function (e) { connectView(explain(e)); });
+  } else {
+    connectView();
+  }
+})();
+</script>
+</body>
+</html>

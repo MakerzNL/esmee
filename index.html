@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>iPhone-spaarpot</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;600;700;800&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wrap" id="app">
+  <p class="empty">Spaarpot laden…</p>
+</main>
+<script src="common.js"></script>
+<script>
+(function () {
+  var S = Spaarpot, app = document.getElementById('app');
+
+  function weekTotal(state) {
+    var now = new Date(), day = (now.getDay() + 6) % 7;
+    var start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day);
+    var iso = start.getFullYear() + '-' + String(start.getMonth() + 1).padStart(2, '0') + '-' + String(start.getDate()).padStart(2, '0');
+    return state.entries.filter(function (e) { return e.date >= iso; }).reduce(function (s, e) { return s + e.cents; }, 0);
+  }
+
+  function render(state) {
+    var t = S.total(state), goal = state.goal.target, left = Math.max(0, goal - t);
+    var pct = Math.min(100, Math.round((t / goal) * 100));
+    var done = S.sorted(state);
+    var min = Math.min.apply(null, state.chores.map(function (c) { return c.cents; }));
+    var max = Math.max.apply(null, state.chores.map(function (c) { return c.cents; }));
+    var h = '';
+
+    h += '<header class="top"><div class="who"><span class="avatar"><img src="esmee.png" alt="Esmée" width="76" height="76"></span>' +
+      '<div><p class="eyebrow">Esmée haar nieuwe</p><h1>' + S.esc(state.goal.name) + '</h1></div></div>' +
+      '<span class="chip"><span class="dot"></span>' + S.esc(state.goal.spec) + '</span></header>';
+
+    h += '<section class="hero" aria-label="Voortgang">' +
+      '<div class="phone" style="--fill:0%" aria-hidden="true"><div class="phone-fill"></div><div class="island"></div><span class="phone-pct num">' + pct + '%</span></div>' +
+      '<div class="tally"><p class="label">Verdiend</p><p class="big num">' + S.euro(t) + '</p>' +
+      '<p class="of num">van ' + S.euro(goal) + ', de helft van ' + S.euro(state.goal.price) + '</p>' +
+      '<div class="bar" role="progressbar" aria-label="Voortgang naar je doel" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"><span style="width:0%"></span></div>' +
+      (left > 0 ? '' : '<p class="reached">Doel gehaald! De helft van je iPhone is binnen.</p>') +
+      '</div></section>';
+
+    h += '<section class="tiles">' +
+      '<div class="tile sun"><span class="k">Nog te gaan</span><span class="v num">' + S.euro(left) + '</span></div>' +
+      '<div class="tile mint"><span class="k">Klusjes gedaan</span><span class="v num">' + done.length + '</span></div>' +
+      '<div class="tile coral"><span class="k">Deze week</span><span class="v num">' + S.euro(weekTotal(state)) + '</span></div>' +
+      '</section>';
+
+    h += '<details class="panel"><summary>' +
+      '<span class="badge mint">' + S.icons.check + '</span>' +
+      '<span class="s-text"><h2>Gedaan</h2><span class="num">' + (done.length ? done.length + (done.length === 1 ? ' klusje' : ' klusjes') + ' · ' + S.euro(t) : 'Nog niks, tijd om te beginnen') + '</span></span>' +
+      '<span class="chev">' + S.icons.chev + '</span></summary><div class="panel-body">';
+    h += done.length
+      ? '<ol class="rows">' + done.map(function (e) {
+          return '<li><span class="what">' + S.esc(e.name) + '</span><span class="pill mint">+' + S.euro(e.cents) + '</span><span class="sub">' + S.esc(S.dayLabel(e.date)) + '</span></li>';
+        }).join('') + '</ol>'
+      : '<p class="empty">Nog niks verdiend. Open het klusjesmenu en kies er een uit.</p>';
+    h += '</div></details>';
+
+    h += '<details class="panel"><summary>' +
+      '<span class="badge coral">' + S.icons.list + '</span>' +
+      '<span class="s-text"><h2>Klusjesmenu</h2><span class="num">' + state.chores.length + ' klusjes · ' + S.euro(min) + ' tot ' + S.euro(max) + '</span></span>' +
+      '<span class="chev">' + S.icons.chev + '</span></summary><div class="panel-body"><ul class="rows">' +
+      state.chores.map(function (c) {
+        var times = left > 0 ? Math.ceil(left / c.cents) : 0;
+        return '<li><span class="what">' + S.esc(c.name) + '</span><span class="pill coral">' + S.euro(c.cents) + '</span>' +
+          '<span class="sub num">' + (times ? 'Alleen dit klusje? Dan nog ' + times + '× tot je doel' : 'Doel al gehaald') + '</span></li>';
+      }).join('') + '</ul></div></details>';
+
+    app.innerHTML = h;
+    // vullen met een kleine animatie
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        app.querySelector('.phone').style.setProperty('--fill', pct + '%');
+        app.querySelector('.bar span').style.width = pct + '%';
+      });
+    });
+  }
+
+  fetch('data.json?t=' + Date.now(), { cache: 'no-store' })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(render)
+    .catch(function () {
+      app.innerHTML = '<p class="empty">De spaarpot kon niet geladen worden. Ververs de pagina over een paar tellen.</p>';
+    });
+})();
+</script>
+</body>
+</html>
