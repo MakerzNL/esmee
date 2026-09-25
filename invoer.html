@@ -37,6 +37,7 @@
 
   var cfg = loadCfg(), state = null, sha = null, busy = false, flash = null;
   var editingId = null, listOpen = false, choreEdit = null, menuOpen = false;
+  var accessSha, accessOpen = false; // accessSha: undefined = onbekend, null = geen wachtwoord, anders sha van toegang.json
 
   function today() {
     var d = new Date();
@@ -58,9 +59,9 @@
   }
 
   /* ---------- GitHub ---------- */
-  function api(method, body) {
+  function api(method, body, path) {
     var url = 'https://api.github.com/repos/' + encodeURIComponent(cfg.owner) + '/' + encodeURIComponent(cfg.repo) +
-      '/contents/' + DATA_PATH + (method === 'GET' ? '?ref=' + encodeURIComponent(cfg.branch) + '&t=' + Date.now() : '');
+      '/contents/' + (path || DATA_PATH) + (method === 'GET' ? '?ref=' + encodeURIComponent(cfg.branch) + '&t=' + Date.now() : '');
     return fetch(url, {
       method: method,
       cache: 'no-store',
@@ -100,6 +101,39 @@
       });
   }
 
+  /* ---------- wachtwoord-toegang ----------
+     De sleutel wordt in de browser versleuteld met een wachtwoord (PBKDF2 + AES-GCM)
+     en als toegang.json in de repo gezet. Alleen wie het wachtwoord kent, kan hem ontsleutelen. */
+  var ACCESS_PATH = 'toegang.json', ITER = 600000;
+  var accessFile = null; // de publieke toegang.json, als die bestaat
+
+  function bytesToB64(bytes) { var s = ''; bytes.forEach(function (b) { s += String.fromCharCode(b); }); return btoa(s); }
+  function b64ToBytes(b64) { return Uint8Array.from(atob(b64), function (ch) { return ch.charCodeAt(0); }); }
+  function deriveKey(password, salt, iter) {
+    return crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']).then(function (base) {
+      return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: salt, iterations: iter, hash: 'SHA-256' }, base,
+        { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    });
+  }
+  function sealAccess(password, secret) {
+    var salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+    return deriveKey(password, salt, ITER).then(function (key) {
+      return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, new TextEncoder().encode(JSON.stringify(secret)));
+    }).then(function (ct) {
+      return { v: 1, kdf: 'PBKDF2-SHA256', iter: ITER, salt: bytesToB64(salt), iv: bytesToB64(iv), data: bytesToB64(new Uint8Array(ct)) };
+    });
+  }
+  function openAccess(password, f) {
+    return deriveKey(password, b64ToBytes(f.salt), f.iter).then(function (key) {
+      return crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBytes(f.iv) }, key, b64ToBytes(f.data));
+    }).then(function (pt) { return JSON.parse(new TextDecoder().decode(pt)); });
+  }
+  function fetchAccessFile() {
+    return fetch(ACCESS_PATH + '?t=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { accessFile = j && j.data ? j : null; return accessFile; }, function () { accessFile = null; return null; });
+  }
+
   /* ---------- schermen ---------- */
   function header(title, sub) {
     return '<header class="top"><div><p class="eyebrow">Alleen voor ouders</p><h1>' + title + '</h1></div>' +
@@ -108,8 +142,20 @@
 
   function connectView(errText) {
     var g = guessRepo(), c = cfg || {};
-    app.innerHTML = header('Koppelen', '') +
-      '<form class="card" id="c-form" novalidate>' +
+    var pw = accessFile
+      ? '<form class="card" id="p-form" novalidate>' +
+          '<h2>Inloggen</h2>' +
+          '<p class="help">Vul het ouderwachtwoord in. Deze browser onthoudt het daarna, dus je hoeft dit maar één keer te doen.</p>' +
+          '<div class="field"><label for="p-pass">Wachtwoord</label><input id="p-pass" type="password" autocomplete="current-password"></div>' +
+          '<div class="actions"><button class="btn" type="submit" id="p-submit">Inloggen</button></div>' +
+          '<p class="msg err" id="p-err"' + (errText ? '' : ' hidden') + '>' + S.esc(errText || '') + '</p>' +
+        '</form>'
+      : '';
+    app.innerHTML = header(accessFile ? 'Inloggen' : 'Koppelen', '') + pw +
+      (accessFile ? '<details class="panel"><summary><span class="badge blue">' + S.icons.list + '</span>' +
+        '<span class="s-text"><h2>Of koppel met een eigen sleutel</h2><span>Voor wie een GitHub-token heeft</span></span>' +
+        '<span class="chev">' + S.icons.chev + '</span></summary><div class="panel-body">' : '') +
+      '<form class="card" id="c-form" novalidate' + (accessFile ? ' style="box-shadow:none"' : '') + '>' +
         '<h2>Koppel deze browser aan GitHub</h2>' +
         '<p class="help">Opslaan gebeurt rechtstreeks in de repo op GitHub. Daarvoor is een sleutel nodig die alleen in déze browser bewaard wordt. Wie de sleutel niet heeft, kan niets wijzigen.</p>' +
         '<ol class="help" style="margin:0;padding-left:20px">' +
@@ -124,8 +170,32 @@
         '</div>' +
         '<div class="field"><label for="c-token">Sleutel (token)</label><input id="c-token" type="password" autocomplete="off" placeholder="github_pat_…"></div>' +
         '<div class="actions"><button class="btn" type="submit" id="c-submit">Koppelen</button></div>' +
-        '<p class="msg err" id="c-err"' + (errText ? '' : ' hidden') + '>' + S.esc(errText || '') + '</p>' +
-      '</form>';
+        '<p class="msg err" id="c-err"' + (errText && !accessFile ? '' : ' hidden') + '>' + S.esc(errText || '') + '</p>' +
+      '</form>' + (accessFile ? '</div></details>' : '');
+
+    var pForm = document.getElementById('p-form');
+    if (pForm) pForm.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var err = document.getElementById('p-err'), btn = document.getElementById('p-submit');
+      var pass = document.getElementById('p-pass').value;
+      if (!pass) { err.textContent = 'Vul het wachtwoord in.'; err.hidden = false; return; }
+      btn.disabled = true; btn.textContent = 'Controleren…'; err.hidden = true;
+      openAccess(pass, accessFile).then(function (secret) {
+        cfg = { owner: secret.owner, repo: secret.repo, token: secret.token, branch: secret.branch || 'main' };
+        return load().then(function () {
+          if (!saveCfg(cfg)) flash = { kind: 'info', text: 'Ingelogd, maar deze browser bewaart het niet. Na verversen moet je opnieuw inloggen.' };
+          render();
+        }, function (e) {
+          cfg = null;
+          btn.disabled = false; btn.textContent = 'Inloggen';
+          err.textContent = e.status === 401 ? 'Het wachtwoord klopt, maar de sleutel erachter is verlopen. Vraag degene die het wachtwoord instelde om een nieuwe.' : explain(e);
+          err.hidden = false;
+        });
+      }, function () {
+        btn.disabled = false; btn.textContent = 'Inloggen';
+        err.textContent = 'Dat wachtwoord klopt niet.'; err.hidden = false;
+      });
+    });
 
     document.getElementById('c-form').addEventListener('submit', function (ev) {
       ev.preventDefault();
@@ -223,9 +293,28 @@
         '<div class="actions"><button class="btn quiet" type="submit" id="g-submit">Doel bijwerken</button></div>' +
         '<p class="msg err" id="g-err" hidden></p></form></div></details>';
 
+    var accStatus = accessSha === undefined ? 'Controleren…' : accessSha ? 'Wachtwoord is ingesteld' : 'Nog geen wachtwoord';
+    h += '<details class="panel" id="access-panel"' + (accessOpen ? ' open' : '') + '><summary><span class="badge mint">' + S.icons.check + '</span>' +
+      '<span class="s-text"><h2>Toegang voor andere ouders</h2><span>' + accStatus + '</span></span>' +
+      '<span class="chev">' + S.icons.chev + '</span></summary><div class="panel-body">' +
+      '<form class="card" id="a-form" novalidate style="box-shadow:none">' +
+        '<p class="help">Met een ouderwachtwoord kan iemand anders (bijvoorbeeld Esmée’s moeder) inloggen op deze pagina zonder eigen GitHub-sleutel. ' +
+        'Kies iets wat Esmée niet kan raden: minstens 10 tekens.</p>' +
+        '<div class="grid2">' +
+          '<div class="field"><label for="a-pass">' + (accessSha ? 'Nieuw wachtwoord' : 'Wachtwoord') + '</label><input id="a-pass" type="password" autocomplete="new-password"></div>' +
+          '<div class="field"><label for="a-pass2">Nog een keer</label><input id="a-pass2" type="password" autocomplete="new-password"></div>' +
+        '</div>' +
+        '<div class="actions"><button class="btn quiet" type="submit" id="a-submit">' + (accessSha ? 'Wachtwoord wijzigen' : 'Wachtwoord instellen') + '</button>' +
+        (accessSha ? '<button class="del" type="button" id="a-revoke">Wachtwoord intrekken</button>' : '') + '</div>' +
+        '<p class="msg err" id="a-err" hidden></p></form></div></details>';
+
     h += '<p class="foot">Gekoppeld aan ' + S.esc(cfg.owner + '/' + cfg.repo) + ' · <a href="#" id="unlink" style="color:inherit">ontkoppelen</a> · <a href="./" style="color:inherit">naar de spaarpot</a></p>';
     app.innerHTML = h;
     wire();
+    if (accessSha === undefined) {
+      api('GET', null, ACCESS_PATH).then(function (j) { accessSha = j.sha; }, function (e) { accessSha = e.status === 404 ? null : undefined; })
+        .then(function () { if (accessSha !== undefined && cfg && state && !busy) render(); });
+    }
   }
 
   function wire() {
@@ -272,14 +361,59 @@
       commit(next, 'Doelbedrag: ' + S.euro(target), 'Doelbedrag bijgewerkt naar ' + S.euro(target) + '.', err, document.getElementById('g-submit'));
     });
 
+    document.getElementById('a-form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      if (busy) return;
+      var err = document.getElementById('a-err'), btn = document.getElementById('a-submit');
+      var p1 = document.getElementById('a-pass').value, p2 = document.getElementById('a-pass2').value;
+      var problem = p1.length < 10 ? 'Kies een wachtwoord van minstens 10 tekens.' : p1 !== p2 ? 'De twee wachtwoorden zijn niet hetzelfde.' : '';
+      if (problem) { err.textContent = problem; err.hidden = false; return; }
+      err.hidden = true; busy = true; btn.disabled = true; btn.textContent = 'Versleutelen…';
+      sealAccess(p1, { owner: cfg.owner, repo: cfg.repo, token: cfg.token, branch: cfg.branch }).then(function (sealed) {
+        btn.textContent = 'Opslaan…';
+        var body = { message: 'Ouderwachtwoord ' + (accessSha ? 'gewijzigd' : 'ingesteld'), content: b64encode(JSON.stringify(sealed, null, 2) + '\n'), branch: cfg.branch };
+        if (accessSha) body.sha = accessSha;
+        return api('PUT', body, ACCESS_PATH);
+      }).then(function (j) {
+        busy = false; accessSha = j.content.sha; accessOpen = true;
+        flash = { kind: 'ok', text: 'Ouderwachtwoord opgeslagen. Over ongeveer een minuut kan iemand anders ermee inloggen op deze pagina.' };
+        render();
+      }, function (e) {
+        busy = false; btn.disabled = false; btn.textContent = accessSha ? 'Wachtwoord wijzigen' : 'Wachtwoord instellen';
+        err.textContent = e && e.status ? explain(e) : 'Versleutelen is niet gelukt in deze browser.'; err.hidden = false;
+      });
+    });
+
+    var revoke = document.getElementById('a-revoke');
+    if (revoke) revoke.addEventListener('click', function () {
+      if (busy) return;
+      if (!revoke.classList.contains('armed')) {
+        revoke.classList.add('armed'); revoke.textContent = 'Zeker weten?';
+        setTimeout(function () { if (revoke.isConnected && !busy) { revoke.classList.remove('armed'); revoke.textContent = 'Wachtwoord intrekken'; } }, 4000);
+        return;
+      }
+      busy = true; revoke.disabled = true; revoke.textContent = 'Bezig…';
+      api('DELETE', { message: 'Ouderwachtwoord ingetrokken', sha: accessSha, branch: cfg.branch }, ACCESS_PATH).then(function () {
+        busy = false; accessSha = null; accessOpen = true;
+        flash = { kind: 'ok', text: 'Wachtwoord ingetrokken. Wie al ingelogd was, blijft ingelogd tot je de GitHub-sleutel zelf intrekt.' };
+        render();
+      }, function (e) {
+        busy = false;
+        var err = document.getElementById('a-err'); err.textContent = explain(e); err.hidden = false;
+        revoke.disabled = false; revoke.classList.remove('armed'); revoke.textContent = 'Wachtwoord intrekken';
+      });
+    });
+
     document.getElementById('unlink').addEventListener('click', function (ev) {
-      ev.preventDefault(); clearCfg(); cfg = null; state = null; connectView();
+      ev.preventDefault(); clearCfg(); cfg = null; state = null; accessSha = undefined;
+      fetchAccessFile().then(function () { connectView(); });
     });
   }
 
   app.addEventListener('toggle', function (ev) {
     if (ev.target.id === 'list-panel') listOpen = ev.target.open;
     if (ev.target.id === 'menu-panel') menuOpen = ev.target.open;
+    if (ev.target.id === 'access-panel') accessOpen = ev.target.open;
   }, true);
 
   app.addEventListener('submit', function (ev) {
@@ -363,9 +497,9 @@
   function render() { if (cfg && state) mainView(); else connectView(); }
 
   if (cfg) {
-    load().then(render, function (e) { connectView(explain(e)); });
+    load().then(render, function (e) { fetchAccessFile().then(function () { connectView(explain(e)); }); });
   } else {
-    connectView();
+    fetchAccessFile().then(function () { connectView(); });
   }
 })();
 </script>
