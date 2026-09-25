@@ -65,7 +65,9 @@
 
     h += '<details class="panel"><summary>' +
       '<span class="badge coral">' + S.icons.list + '</span>' +
-      '<span class="s-text"><h2>Klusjesmenu</h2><span class="num">' + state.chores.length + ' klusjes · ' + S.euro(min) + ' tot ' + S.euro(max) + '</span></span>' +
+      '<span class="s-text"><h2>Klusjesmenu</h2><span class="num">' + (!state.chores.length ? 'Nog leeg' :
+        state.chores.length === 1 ? '1 klusje · ' + S.euro(min) :
+        state.chores.length + ' klusjes · ' + (min === max ? S.euro(min) : S.euro(min) + ' tot ' + S.euro(max))) + '</span></span>' +
       '<span class="chev">' + S.icons.chev + '</span></summary><div class="panel-body"><ul class="rows">' +
       state.chores.map(function (c) {
         var times = left > 0 ? Math.ceil(left / c.cents) : 0;

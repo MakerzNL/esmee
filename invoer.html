@@ -36,7 +36,7 @@
   function clearCfg() { try { localStorage.removeItem(KEY); } catch (e) {} }
 
   var cfg = loadCfg(), state = null, sha = null, busy = false, flash = null;
-  var editingId = null, listOpen = false;
+  var editingId = null, listOpen = false, choreEdit = null, menuOpen = false;
 
   function today() {
     var d = new Date();
@@ -88,7 +88,7 @@
     if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = 'Opslaan…'; }
     api('PUT', { message: message, content: b64encode(JSON.stringify(next, null, 2) + '\n'), sha: sha, branch: cfg.branch })
       .then(function (j) {
-        sha = j.content.sha; state = next; busy = false; editingId = null;
+        sha = j.content.sha; state = next; busy = false; editingId = null; choreEdit = null;
         flash = { kind: 'ok', text: okMsg + ' Over ongeveer een minuut staat het ook op de spaarpot.' };
         render();
       }, function (e) {
@@ -158,7 +158,7 @@
     h += '<form class="card" id="f-form" novalidate><h2>Nieuw klusje</h2>' +
       '<div class="grid2">' +
         '<div class="field"><label for="f-date">Datum</label><input type="date" id="f-date" value="' + today() + '"></div>' +
-        '<div class="field"><label for="f-amount">Bedrag</label><div class="money"><span>€</span><input type="text" inputmode="decimal" id="f-amount" value="' + centsInput(state.chores[0].cents) + '"></div></div>' +
+        '<div class="field"><label for="f-amount">Bedrag</label><div class="money"><span>€</span><input type="text" inputmode="decimal" id="f-amount" value="' + (state.chores.length ? centsInput(state.chores[0].cents) : '') + '"></div></div>' +
       '</div>' +
       '<div class="field"><label for="f-chore">Klusje</label><select id="f-chore">' +
         state.chores.map(function (c) { return '<option value="' + S.esc(c.id) + '">' + S.esc(c.name) + ' (' + S.euro(c.cents) + ')</option>'; }).join('') +
@@ -188,6 +188,30 @@
           '<button class="del" type="button" data-edit="' + S.esc(e.id) + '">Wijzigen</button>' +
           '<span class="sub">' + S.esc(S.dayLabel(e.date)) + '</span></li>';
       }).join('') + '</ol>' : '<p class="empty">Nog niets ingevoerd.</p>') +
+      '</div></details>';
+
+    function choreForm(c) {
+      var isNew = !c;
+      return '<li class="editing"><form class="edit-form" data-chore-form="' + (isNew ? '__new' : S.esc(c.id)) + '" novalidate>' +
+        '<div class="grid2">' +
+          '<div class="field"><label for="m-name">Klusje</label><input id="m-name" maxlength="80" placeholder="Bijv. vaatwasser uitruimen" value="' + (isNew ? '' : S.esc(c.name)) + '"></div>' +
+          '<div class="field"><label for="m-amount">Bedrag</label><div class="money"><span>€</span><input type="text" inputmode="decimal" id="m-amount" placeholder="2,50" value="' + (isNew ? '' : centsInput(c.cents)) + '"></div></div>' +
+        '</div>' +
+        '<div class="actions"><button class="btn" type="submit" id="m-submit">' + (isNew ? 'Toevoegen' : 'Wijziging opslaan') + '</button>' +
+        '<button class="btn quiet" type="button" data-cancel>Annuleren</button>' +
+        (isNew ? '' : '<button class="del" type="button" data-chore-del="' + S.esc(c.id) + '">Verwijderen</button>') + '</div>' +
+        '<p class="msg err" id="m-err" hidden></p></form></li>';
+    }
+    h += '<details class="panel" id="menu-panel"' + (menuOpen ? ' open' : '') + '><summary><span class="badge coral">' + S.icons.list + '</span>' +
+      '<span class="s-text"><h2>Klusjesmenu</h2><span class="num">' + state.chores.length + (state.chores.length === 1 ? ' klusje' : ' klusjes') + ' op het menu</span></span>' +
+      '<span class="chev">' + S.icons.chev + '</span></summary><div class="panel-body"><ul class="rows admin">' +
+      state.chores.map(function (c) {
+        if (c.id === choreEdit) return choreForm(c);
+        return '<li><span class="what">' + S.esc(c.name) + '</span><span class="pill coral">' + S.euro(c.cents) + '</span>' +
+          '<button class="del" type="button" data-chore-edit="' + S.esc(c.id) + '">Wijzigen</button></li>';
+      }).join('') +
+      (choreEdit === '__new' ? choreForm(null) : '') + '</ul>' +
+      (choreEdit === '__new' ? '' : '<div class="actions" style="padding:10px 4px 2px"><button class="btn quiet" type="button" data-chore-edit="__new">+ Klusje toevoegen</button></div>') +
       '</div></details>';
 
     h += '<details class="panel"><summary><span class="badge blue">' + S.icons.list + '</span>' +
@@ -255,7 +279,31 @@
 
   app.addEventListener('toggle', function (ev) {
     if (ev.target.id === 'list-panel') listOpen = ev.target.open;
+    if (ev.target.id === 'menu-panel') menuOpen = ev.target.open;
   }, true);
+
+  app.addEventListener('submit', function (ev) {
+    var f = ev.target.closest('[data-chore-form]');
+    if (!f) return;
+    ev.preventDefault();
+    if (busy) return;
+    var id = f.getAttribute('data-chore-form'), err = document.getElementById('m-err');
+    var name = document.getElementById('m-name').value.trim();
+    var cents = parseEuro(document.getElementById('m-amount').value);
+    var problem = !name ? 'Vul de naam van het klusje in.' :
+      !(cents > 0) ? 'Vul een bedrag in, bijvoorbeeld 2,50.' : cents > 100000 ? 'Dat bedrag is wel erg hoog. Klopt het?' : '';
+    if (problem) { err.textContent = problem; err.hidden = false; return; }
+    var next = JSON.parse(JSON.stringify(state));
+    if (id === '__new') {
+      next.chores.push({ id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: name, cents: cents });
+      commit(next, 'Klusjesmenu: ' + name + ' toegevoegd (' + S.euro(cents) + ')', name + ' (' + S.euro(cents) + ') staat nu op het menu.', err, document.getElementById('m-submit'));
+    } else {
+      var c = next.chores.filter(function (x) { return x.id === id; })[0];
+      if (!c || (c.name === name && c.cents === cents)) { choreEdit = null; render(); return; }
+      c.name = name; c.cents = cents;
+      commit(next, 'Klusjesmenu: ' + name + ' gewijzigd (' + S.euro(cents) + ')', name + ' is aangepast naar ' + S.euro(cents) + '. Eerder ingevoerde klusjes houden hun oude bedrag.', err, document.getElementById('m-submit'));
+    }
+  });
 
   app.addEventListener('submit', function (ev) {
     var f = ev.target.closest('[data-edit-form]');
@@ -281,7 +329,23 @@
   app.addEventListener('click', function (ev) {
     var ed = ev.target.closest('[data-edit]');
     if (ed && !busy) { editingId = ed.getAttribute('data-edit'); listOpen = true; render(); var n = document.getElementById('e-name'); if (n) n.focus(); return; }
-    if (ev.target.closest('[data-cancel]') && !busy) { editingId = null; render(); return; }
+    var ce = ev.target.closest('[data-chore-edit]');
+    if (ce && !busy) { choreEdit = ce.getAttribute('data-chore-edit'); menuOpen = true; render(); var m = document.getElementById('m-name'); if (m) m.focus(); return; }
+    if (ev.target.closest('[data-cancel]') && !busy) { editingId = null; choreEdit = null; render(); return; }
+    var cd = ev.target.closest('[data-chore-del]');
+    if (cd && !busy) {
+      if (!cd.classList.contains('armed')) {
+        cd.classList.add('armed'); cd.textContent = 'Zeker weten?';
+        setTimeout(function () { if (cd.isConnected && !busy) { cd.classList.remove('armed'); cd.textContent = 'Verwijderen'; } }, 4000);
+        return;
+      }
+      var cid = cd.getAttribute('data-chore-del');
+      var old = state.chores.filter(function (x) { return x.id === cid; })[0];
+      var nx = JSON.parse(JSON.stringify(state));
+      nx.chores = nx.chores.filter(function (x) { return x.id !== cid; });
+      commit(nx, 'Klusjesmenu: ' + (old ? old.name : cid) + ' verwijderd', (old ? old.name : 'Klusje') + ' staat niet meer op het menu. Wat ze er al mee verdiende, blijft staan.', document.getElementById('m-err'), cd);
+      return;
+    }
     var d = ev.target.closest('[data-del]');
     if (!d || busy) return;
     if (!d.classList.contains('armed')) {
