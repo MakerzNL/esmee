@@ -298,8 +298,7 @@
       '<span class="s-text"><h2>Toegang voor andere ouders</h2><span>' + accStatus + '</span></span>' +
       '<span class="chev">' + S.icons.chev + '</span></summary><div class="panel-body">' +
       '<form class="card" id="a-form" novalidate style="box-shadow:none">' +
-        '<p class="help">Met een ouderwachtwoord kan iemand anders (bijvoorbeeld Esmée’s moeder) inloggen op deze pagina zonder eigen GitHub-sleutel. ' +
-        'Kies iets wat Esmée niet kan raden: minstens 10 tekens.</p>' +
+        '<p class="help">Met een ouderwachtwoord kan iemand anders (bijvoorbeeld Esmée’s moeder) inloggen op deze pagina zonder eigen GitHub-sleutel.</p>' +
         '<div class="grid2">' +
           '<div class="field"><label for="a-pass">' + (accessSha ? 'Nieuw wachtwoord' : 'Wachtwoord') + '</label><input id="a-pass" type="password" autocomplete="new-password"></div>' +
           '<div class="field"><label for="a-pass2">Nog een keer</label><input id="a-pass2" type="password" autocomplete="new-password"></div>' +
@@ -366,7 +365,7 @@
       if (busy) return;
       var err = document.getElementById('a-err'), btn = document.getElementById('a-submit');
       var p1 = document.getElementById('a-pass').value, p2 = document.getElementById('a-pass2').value;
-      var problem = p1.length < 10 ? 'Kies een wachtwoord van minstens 10 tekens.' : p1 !== p2 ? 'De twee wachtwoorden zijn niet hetzelfde.' : '';
+      var problem = !p1 ? 'Vul een wachtwoord in.' : p1 !== p2 ? 'De twee wachtwoorden zijn niet hetzelfde.' : '';
       if (problem) { err.textContent = problem; err.hidden = false; return; }
       err.hidden = true; busy = true; btn.disabled = true; btn.textContent = 'Versleutelen…';
       sealAccess(p1, { owner: cfg.owner, repo: cfg.repo, token: cfg.token, branch: cfg.branch }).then(function (sealed) {
