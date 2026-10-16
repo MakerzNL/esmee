@@ -433,8 +433,20 @@
     } else {
       var c = next.chores.filter(function (x) { return x.id === id; })[0];
       if (!c || (c.name === name && c.cents === cents)) { choreEdit = null; render(); return; }
+      // Doorvoeren in gedane klusjes van dit menu-item. Alleen klusjes met het oude standaardbedrag
+      // krijgen het nieuwe bedrag; een bewust afwijkend bedrag (bijv. half gedaan) blijft staan.
+      var changed = 0;
+      next.entries.forEach(function (e) {
+        if (e.chore !== id) return;
+        var hit = false;
+        if (e.cents === c.cents && cents !== c.cents) { e.cents = cents; hit = true; }
+        if (e.name === c.name && name !== c.name) { e.name = name; hit = true; }
+        if (hit) changed++;
+      });
       c.name = name; c.cents = cents;
-      commit(next, 'Klusjesmenu: ' + name + ' gewijzigd (' + S.euro(cents) + ')', name + ' is aangepast naar ' + S.euro(cents) + '. Eerder ingevoerde klusjes houden hun oude bedrag.', err, document.getElementById('m-submit'));
+      commit(next, 'Klusjesmenu: ' + name + ' gewijzigd (' + S.euro(cents) + ')' + (changed ? ', ' + changed + ' gedane klusjes bijgewerkt' : ''),
+        name + ' is aangepast naar ' + S.euro(cents) + '.' + (changed ? ' Ook ' + changed + (changed === 1 ? ' gedaan klusje is' : ' gedane klusjes zijn') + ' bijgewerkt.' : ''),
+        err, document.getElementById('m-submit'));
     }
   });
 
