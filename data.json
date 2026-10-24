@@ -132,6 +132,14 @@
       "cents": 2250,
       "chore": null,
       "added": 1792602402239
+    },
+    {
+      "id": "kmvmokfbc8vfl",
+      "date": "2026-10-24",
+      "name": "Vaatwasser inruimen en uitruimen",
+      "cents": 500,
+      "chore": "mmv0ve7mxx5c",
+      "added": 1792863382152
     }
   ]
 }
